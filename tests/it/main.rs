@@ -1,5 +1,8 @@
 use jsonnet_go::*;
 
+#[cfg(feature = "json")]
+mod json;
+
 #[test]
 fn evaluate_base64() {
     let jsonnet = "std.base64('Hello, World!')";

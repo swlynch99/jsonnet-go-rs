@@ -34,6 +34,8 @@ use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::str::Utf8Error;
 
+#[cfg(feature = "json")]
+use ::serde::{de::DeserializeOwned, Serialize};
 use jsonnet_go_sys as sys;
 
 use crate::string::JsonnetStringBuilder;
@@ -410,11 +412,59 @@ impl JsonnetVm {
     ///
     /// # Panics
     /// This method panics if either of `key` or `value` contain a nul byte.
-    pub fn ext_code(&mut self, key: &str, val: &str) {
+    pub fn ext_code(&mut self, key: &str, value: &str) {
         let key = str_to_cstring(key);
-        let val = str_to_cstring(val);
+        let val = str_to_cstring(value);
 
         unsafe { sys::jsonnet_ext_code(self.as_raw(), key.as_ptr(), val.as_ptr()) }
+    }
+
+    /// Bind a jsonnet external variable to a provided json value.
+    ///
+    /// See the jsonnet language reference section on [external variables][0]
+    /// for more details on external variables.
+    ///
+    /// [0]: https://jsonnet.org/ref/language.html#external-variables-
+    ///
+    /// # Errors
+    /// This method will only return an error if the serialization of `value`
+    /// returns an error.
+    ///
+    /// # Panics
+    /// This method panics if either of `key` or the serialized JSON form of
+    /// `value` contain a nul byte.
+    #[cfg(feature = "json")]
+    #[cfg_attr(docsrs, doc_cfg(feature = "json"))]
+    pub fn ext_json<V>(&mut self, key: &str, value: &V) -> serde_json::Result<()>
+    where
+        V: Serialize + ?Sized,
+    {
+        fn escape(mut input: &str, output: &mut String) {
+            while let Some((index, b)) = input.bytes().enumerate().find(|(_, b)| matches!(b, b'\0' | b'\\' | b'"')) {
+                let (head, rest) = input.split_at(index);
+                output.push_str(head);
+
+                input = &rest[1..];
+                match b {
+                    b'\0' => output.push_str("\\u0000"),
+                    b'\\' => output.push_str("\\\\"),
+                    b'\"' => output.push_str("\\\""),
+                    _ => unreachable!()
+                }
+            }
+
+            output.push_str(input);
+        }
+
+        let json = serde_json::to_string(value)?;
+
+        let mut code = String::with_capacity(json.len() + 32);
+        code.push_str("std.parseJson(\"");
+        escape(&json, &mut code);
+        code.push_str("\")");
+
+        self.ext_code(key, &code);
+        Ok(())
     }
 
     /// Bind a string top-level argument for a top-level parameter.
@@ -472,9 +522,43 @@ impl JsonnetVm {
         let output = self.evaluate_raw(options)?;
 
         match output.to_str() {
-            Ok(output) => Ok(output.to_owned()),
+            Ok(mut output) => {
+                // The output string from libjsonnet always includes an extra newline at the
+                // end. This doesn't matter for json output but it corrupts the string when
+                // doing string output.
+                //
+                // We strip it here ourselves to avoid that issue.
+                if output.ends_with('\n') {
+                    output = &output[..output.len() - 1];
+                }
+
+                Ok(output.to_owned())
+            }
             Err(e) => Err(Error::utf8(e)),
         }
+    }
+
+    /// Evaluate some jsonnet code and parse the resulting json to a rust type.
+    ///
+    /// Depending on `options` this can either read the jsonnet from a file, or
+    /// evaluate a jsonnet snippet. This function will ignore the
+    /// [`string_output`] setting on `options`.
+    ///
+    /// # Errors
+    /// This function will return an error if:
+    /// - the Jsonnet VM encounters an error while evaluating the program, or,
+    /// - the resulting JSON could not be parsed as a `T`.
+    ///
+    /// [`string_output`]: EvaluateOptions::string_output
+    #[cfg(feature = "json")]
+    #[cfg_attr(docsrs, doc_cfg(feature = "json"))]
+    pub fn evaluate_json<T>(&mut self, options: EvaluateOptions<'_>) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        let json = self.evaluate_raw(options.string_output(false))?;
+        let bytes = json.to_bytes();
+        serde_json::from_slice(bytes).map_err(|e| Error(ErrorImpl::Json(e)))
     }
 
     /// Evaluate Jsonnet code, returning a number of named JSON files.
@@ -852,6 +936,10 @@ enum ErrorImpl {
     /// An error emitted while serializing to a JsonValue.
     #[cfg_attr(not(feature = "serde"), allow(dead_code))]
     Serde(String),
+
+    /// An error emitted when deserializing the resulting JSON to a rust type.
+    #[cfg(feature = "json")]
+    Json(serde_json::Error),
 }
 
 impl Error {
@@ -870,6 +958,8 @@ impl fmt::Display for Error {
             ErrorImpl::Vm(error) => f.write_str(error),
             ErrorImpl::Serde(error) => f.write_str(error),
             ErrorImpl::InvalidUtf8(_) => f.write_str("returned string contained invalid UTF-8"),
+            #[cfg(feature = "json")]
+            ErrorImpl::Json(error) => write!(f, "failed to deserialize json: {error}"),
         }
     }
 }
@@ -878,6 +968,8 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0 {
             ErrorImpl::InvalidUtf8(e) => Some(e),
+            #[cfg(feature = "json")]
+            ErrorImpl::Json(e) => Some(e),
             _ => None,
         }
     }
