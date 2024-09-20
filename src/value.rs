@@ -59,7 +59,7 @@ impl<'vm: 'value, 'value> JsonVal<'vm, 'value> {
         }
     }
 
-    pub fn as_string(&self) -> Option<&str> {
+    pub fn as_string(&self) -> Option<&'value str> {
         let value =
             unsafe { sys::jsonnet_json_extract_string(self.vm.as_ptr(), self.value.as_ptr()) };
         if value.is_null() {
@@ -93,7 +93,11 @@ impl<'vm, 'value> fmt::Debug for JsonVal<'vm, 'value> {
 }
 
 /// An owned jsonnet JSON value.
-pub struct JsonValue<'vm>(JsonVal<'vm, 'vm>);
+pub struct JsonValue<'vm> {
+    vm: NonNull<sys::JsonnetVm>,
+    value: NonNull<sys::JsonnetJsonValue>,
+    _marker: PhantomData<&'vm sys::JsonnetVm>,
+}
 
 impl<'vm> JsonValue<'vm> {
     /// Create a new JsonValue from its raw parts.
@@ -102,39 +106,48 @@ impl<'vm> JsonValue<'vm> {
     /// `value` must be a pointer returned from one of the `jsonnet_json_make_*`
     /// libjsonnet functions.
     pub unsafe fn from_parts(vm: &'vm JsonnetVm, value: *mut sys::JsonnetJsonValue) -> Self {
-        Self(JsonVal::new(vm, &*value))
+        Self {
+            vm: vm.vm,
+            value: unsafe { NonNull::new_unchecked(value) },
+            _marker: PhantomData,
+        }
     }
 
     pub fn as_raw(&self) -> *const sys::JsonnetJsonValue {
-        self.0.as_raw()
+        self.value.as_ptr()
     }
 
     pub fn as_raw_mut(&mut self) -> *mut sys::JsonnetJsonValue {
-        self.0.value.as_ptr()
+        self.value.as_ptr()
     }
 
     pub fn into_raw(self) -> *mut sys::JsonnetJsonValue {
-        ManuallyDrop::new(self).0.value.as_ptr()
+        ManuallyDrop::new(self).value.as_ptr()
     }
 
     pub fn as_json_val<'value>(&'value self) -> JsonVal<'vm, 'value> {
-        self.0
+        JsonVal {
+            vm: self.vm,
+            value: self.value,
+            _marker1: PhantomData,
+            _marker2: PhantomData,
+        }
     }
 
     pub fn is_null(&self) -> bool {
-        self.0.is_null()
+        self.as_json_val().is_null()
     }
 
     pub fn as_bool(&self) -> Option<bool> {
-        self.0.as_bool()
+        self.as_json_val().as_bool()
     }
 
     pub fn as_number(&self) -> Option<f64> {
-        self.0.as_number()
+        self.as_json_val().as_number()
     }
 
     pub fn as_string(&self) -> Option<&str> {
-        self.0.as_string()
+        self.as_json_val().as_string()
     }
 
     /// Create a `JsonValue` representing null.
@@ -142,6 +155,14 @@ impl<'vm> JsonValue<'vm> {
         let value = unsafe { sys::jsonnet_json_make_null(vm.as_raw()) };
 
         // SAFETY: value was returned from jsonnet_json_make_null
+        unsafe { Self::from_parts(vm, value) }
+    }
+
+    /// Create a `JsonValue` representing a boolean.
+    pub fn bool(vm: &'vm JsonnetVm, value: bool) -> Self {
+        let value = unsafe { sys::jsonnet_json_make_bool(vm.as_raw(), value.into()) };
+
+        // SAFETY: value was returned from jsonnet_json_make_bool
         unsafe { Self::from_parts(vm, value) }
     }
 
@@ -162,77 +183,72 @@ impl<'vm> JsonValue<'vm> {
         unsafe { Self::from_parts(vm, value) }
     }
 
-    /// Create a `JsonValue` representing an array.
-    pub fn array<I, V>(vm: &'vm JsonnetVm, items: I) -> Self
-    where
-        I: IntoIterator<Item = V>,
-        V: AsJsonVal<'vm>,
-    {
+    /// Create a `JsonValue` representing an empty array.
+    pub fn array(vm: &'vm JsonnetVm) -> Self {
         let value = unsafe { sys::jsonnet_json_make_array(vm.as_raw()) };
-        let mut array = unsafe { Self::from_parts(vm, value) };
-
-        for item in items {
-            let val = item.as_json_val();
-
-            assert!(
-                val.vm.as_ptr() == vm.as_raw(),
-                "attempted to insert a JsonValue from a different Jsonnet VM"
-            );
-
-            unsafe {
-                sys::jsonnet_json_array_append(
-                    vm.as_raw(),
-                    array.as_raw_mut(),
-                    val.as_raw() as *mut _,
-                )
-            };
-        }
-
-        array
+        unsafe { Self::from_parts(vm, value) }
     }
 
     /// Create a `JsonValue` representing an object.
-    pub fn object<I, K, V>(vm: &'vm JsonnetVm, entries: I) -> Self
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: AsRef<str>,
-        V: AsJsonVal<'vm>,
-    {
+    pub fn object(vm: &'vm JsonnetVm) -> Self {
         let value = unsafe { sys::jsonnet_json_make_object(vm.as_raw()) };
-        let mut object = unsafe { Self::from_parts(vm, value) };
+        unsafe { Self::from_parts(vm, value) }
+    }
 
-        for (key, val) in entries {
-            let key = crate::str_to_cstring(key.as_ref());
-            let val = val.as_json_val();
+    /// Append an object to this array value.
+    ///
+    /// If this value is not currently an array, then its value will be
+    /// replaced with an empty array before appending to it.
+    pub fn append(&mut self, value: impl AsJsonVal<'vm>) {
+        let val = value.as_json_val();
 
-            assert!(
-                val.vm.as_ptr() == vm.as_raw(),
-                "attempted to insert a JsonValue from a different Jsonnet VM"
+        assert!(
+            val.vm.as_ptr() == self.vm.as_ptr(),
+            "attempted to insert a JsonValue from a different Jsonnet VM"
+        );
+
+        unsafe {
+            sys::jsonnet_json_array_append(
+                self.vm.as_ptr(),
+                self.as_raw_mut(),
+                val.as_raw() as *mut _,
             );
-
-            unsafe {
-                sys::jsonnet_json_object_append(
-                    vm.as_raw(),
-                    object.as_raw_mut(),
-                    key.as_ptr(),
-                    val.as_raw() as *mut _,
-                );
-            }
         }
+    }
 
-        object
+    /// Set a field within this object value.
+    ///
+    /// If this value is not currently an object then its value will be replaced
+    /// with an empty object before inserting the new field.
+    pub fn insert(&mut self, key: &str, value: impl AsJsonVal<'vm>) {
+        let key = crate::str_to_cstring(key.as_ref());
+        let val = value.as_json_val();
+
+        assert!(
+            val.vm.as_ptr() == self.vm.as_ptr(),
+            "attempted to insert a JsonValue from a different Jsonnet VM"
+        );
+
+        unsafe {
+            sys::jsonnet_json_object_append(
+                self.vm.as_ptr(),
+                self.as_raw_mut(),
+                key.as_ptr(),
+                val.as_raw() as *mut _,
+            );
+        }
     }
 }
 
 impl<'vm> Drop for JsonValue<'vm> {
     fn drop(&mut self) {
-        unsafe { sys::jsonnet_json_destroy(self.0.vm.as_ptr(), self.0.value.as_ptr()) }
+        unsafe { sys::jsonnet_json_destroy(self.vm.as_ptr(), self.value.as_ptr()) }
     }
 }
 
 impl<'vm> fmt::Debug for JsonValue<'vm> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.as_json_val().fmt(f)
     }
 }
 

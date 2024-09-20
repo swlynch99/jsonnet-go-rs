@@ -29,7 +29,6 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString, OsStr};
 use std::fmt;
 use std::iter::FusedIterator;
 use std::mem::ManuallyDrop;
-use std::ops::Deref;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -37,11 +36,16 @@ use std::str::Utf8Error;
 
 use jsonnet_go_sys as sys;
 
+use crate::string::JsonnetStringBuilder;
+
+mod string;
+mod value;
+
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc_cfg(feature = "serde"))]
 pub mod serde;
-mod value;
 
+pub use crate::string::JsonnetString;
 pub use crate::value::{AsJsonVal, JsonVal, JsonValue};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -49,12 +53,13 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub struct JsonnetVm {
     vm: NonNull<sys::JsonnetVm>,
 
-    // Callback data for the import callback.
-    //
-    // This ensures that we can drop it when we are dropped or when a new import callback is
-    // raised.
+    /// Callback data for the import callback.
+    ///
+    /// This ensures that we can drop it when we are dropped or when a new
+    /// import callback is raised.
     import_cb_data: Box<dyn Send>,
 
+    /// Callback data for native callbacks.
     native_cb_data: BTreeMap<CString, Box<dyn Send>>,
 }
 
@@ -283,15 +288,14 @@ impl JsonnetVm {
     /// # Panics
     /// This function will panic if `name` or any of the parameter names contain
     /// a nul byte.
-    pub fn native_callback<F, E>(
+    pub fn native_callback<'a, F>(
         &mut self,
         name: &str,
-        params: impl Iterator<Item: AsRef<str>>,
+        params: impl IntoIterator<Item = &'a str>,
         cb: F,
     ) where
-        F: for<'vm> Fn(&'vm JsonnetVm, &[JsonVal<'vm, 'vm>]) -> Result<JsonValue<'vm>, E>,
+        F: for<'vm> Fn(&'vm JsonnetVm, &[JsonVal<'vm, 'vm>]) -> Result<JsonValue<'vm>, String>,
         F: Send + Sync + 'static,
-        E: fmt::Display,
     {
         struct NativeContext<F> {
             vm: NonNull<sys::JsonnetVm>,
@@ -300,14 +304,14 @@ impl JsonnetVm {
 
         unsafe impl<F: Send> Send for NativeContext<F> {}
 
-        extern "C" fn callback<F, E>(
+        extern "C" fn callback<F>(
             ctx: *mut c_void,
             argv: *const *const sys::JsonnetJsonValue,
             success: *mut c_int,
         ) -> *mut sys::JsonnetJsonValue
         where
-            F: for<'vm> Fn(&'vm JsonnetVm, &[JsonVal<'vm, 'vm>]) -> Result<JsonValue<'vm>, E>,
-            E: fmt::Display,
+            F: for<'vm> Fn(&'vm JsonnetVm, &[JsonVal<'vm, 'vm>]) -> Result<JsonValue<'vm>, String>,
+            F: Send + Sync + 'static,
         {
             let ctx = unsafe { &mut *(ctx as *mut NativeContext<F>) };
             let vm = unsafe { ManuallyDrop::new(JsonnetVm::from_raw(ctx.vm.as_ptr())) };
@@ -332,7 +336,7 @@ impl JsonnetVm {
                     }
                     Err(e) => {
                         unsafe { *success = 1 };
-                        JsonValue::string(&vm, &e.to_string())
+                        JsonValue::string(&vm, &e)
                     }
                 }
             }));
@@ -360,7 +364,7 @@ impl JsonnetVm {
         let mut ctx = Box::new(NativeContext { vm: self.vm, cb });
 
         let name = str_to_cstring(name);
-        let params: Vec<_> = params.map(|p| str_to_cstring(p.as_ref())).collect();
+        let params: Vec<_> = params.into_iter().map(|p| str_to_cstring(p)).collect();
         let params: Vec<_> = params
             .iter()
             .map(|p| p.as_ptr())
@@ -371,7 +375,7 @@ impl JsonnetVm {
             sys::jsonnet_native_callback(
                 self.as_raw(),
                 name.as_ptr(),
-                Some(callback::<F, E>),
+                Some(callback::<F>),
                 ctx.as_mut() as *mut _ as *mut c_void,
                 params.as_ptr(),
             );
@@ -834,137 +838,6 @@ impl<'a> Drop for StreamIter<'a> {
     }
 }
 
-/// A C string whose memory is managed by the Jsonnet VM.
-pub struct JsonnetString<'a> {
-    vm: &'a JsonnetVm,
-    ptr: NonNull<c_char>,
-    len: usize,
-}
-
-impl<'a> JsonnetString<'a> {
-    fn from_bytes(vm: &'a JsonnetVm, bytes: &[u8]) -> Self {
-        assert!(
-            bytes.iter().copied().any(|b| b == b'\0'),
-            "cannot create a JsonnetString from a string with a nul byte"
-        );
-
-        unsafe {
-            let mem = sys::jsonnet_realloc(vm.as_raw(), std::ptr::null_mut(), bytes.len() + 1);
-            std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, mem, bytes.len());
-            std::ptr::write(mem.add(bytes.len() + 1), b'\0' as c_char);
-
-            Self {
-                vm,
-                len: bytes.len(),
-                ptr: NonNull::new_unchecked(mem),
-            }
-        }
-    }
-
-    fn from_str(vm: &'a JsonnetVm, str: &str) -> Self {
-        Self::from_bytes(vm, str.as_bytes())
-    }
-
-    unsafe fn from_raw(vm: &'a JsonnetVm, ptr: *mut c_char) -> Self {
-        let len = unsafe { CStr::from_ptr(ptr).count_bytes() + 1 };
-
-        Self {
-            vm,
-            len,
-            ptr: unsafe { NonNull::new_unchecked(ptr) },
-        }
-    }
-
-    fn into_raw(self) -> *mut c_char {
-        let this = ManuallyDrop::new(self);
-        this.ptr.as_ptr()
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.len + 1
-    }
-}
-
-impl<'a> Drop for JsonnetString<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            sys::jsonnet_realloc(self.vm.as_raw(), self.ptr.as_ptr(), 0);
-        }
-    }
-}
-
-impl<'a> Deref for JsonnetString<'a> {
-    type Target = CStr;
-
-    fn deref(&self) -> &Self::Target {
-        let bytes =
-            unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const u8, self.capacity()) };
-        unsafe { CStr::from_bytes_with_nul_unchecked(bytes) }
-    }
-}
-
-pub(crate) struct JsonnetStringBuilder<'vm> {
-    vm: &'vm JsonnetVm,
-    ptr: NonNull<c_char>,
-    len: usize,
-    cap: usize,
-}
-
-impl<'vm> JsonnetStringBuilder<'vm> {
-    pub fn with_capacity(vm: &'vm JsonnetVm, capacity: usize) -> Self {
-        let cap = capacity + 1;
-        let buf = unsafe { sys::jsonnet_realloc(vm.as_raw(), std::ptr::null_mut(), cap) };
-
-        unsafe { *buf = b'\0' as c_char };
-
-        Self {
-            vm,
-            ptr: unsafe { NonNull::new_unchecked(buf) },
-            len: 0,
-            cap,
-        }
-    }
-
-    pub fn into_string(self) -> JsonnetString<'vm> {
-        let this = ManuallyDrop::new(self);
-
-        JsonnetString {
-            vm: this.vm,
-            ptr: this.ptr,
-            len: this.len,
-        }
-    }
-
-    fn push_str(&mut self, str: &str) {
-        if self.cap < self.len + str.len() + 1 {
-            let ncap = (self.cap * 2).max(self.len + str.len() + 1);
-            let nbuf = unsafe { sys::jsonnet_realloc(self.vm.as_raw(), self.ptr.as_ptr(), ncap) };
-
-            self.ptr = unsafe { NonNull::new_unchecked(nbuf) };
-            self.cap = ncap;
-        }
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                str.as_ptr() as *const c_char,
-                self.ptr.as_ptr().add(self.len),
-                str.len(),
-            );
-        }
-
-        self.len += str.len();
-
-        unsafe { *self.ptr.as_ptr().add(self.len) = b'\0' as c_char };
-    }
-}
-
-impl<'vm> fmt::Write for JsonnetStringBuilder<'vm> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.push_str(s);
-        Ok(())
-    }
-}
-
 #[derive(Debug)]
 pub struct Error(ErrorImpl);
 
@@ -975,6 +848,10 @@ enum ErrorImpl {
 
     /// A string returned by libjsonnet did not contain valid UTF-8.
     InvalidUtf8(std::str::Utf8Error),
+
+    /// An error emitted while serializing to a JsonValue.
+    #[cfg_attr(not(feature = "serde"), allow(dead_code))]
+    Serde(String),
 }
 
 impl Error {
@@ -991,6 +868,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             ErrorImpl::Vm(error) => f.write_str(error),
+            ErrorImpl::Serde(error) => f.write_str(error),
             ErrorImpl::InvalidUtf8(_) => f.write_str("returned string contained invalid UTF-8"),
         }
     }
