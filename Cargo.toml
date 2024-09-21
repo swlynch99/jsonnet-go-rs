@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 serde = ["dep:serde"]
-json = ["serde", "dep:serde_json"]
+json = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 jsonnet-go-sys = "0.1.0"

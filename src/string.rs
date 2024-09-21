@@ -18,7 +18,7 @@ pub struct JsonnetString<'a> {
 impl<'a> JsonnetString<'a> {
     pub(crate) fn from_bytes(vm: &'a JsonnetVm, bytes: &[u8]) -> Self {
         assert!(
-            bytes.iter().copied().any(|b| b == b'\0'),
+            !bytes.iter().copied().any(|b| b == b'\0'),
             "cannot create a JsonnetString from a string with a nul byte"
         );
 

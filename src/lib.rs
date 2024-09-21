@@ -8,9 +8,9 @@
 //! containing the resulting JSON.
 //!
 //! ```
-//! # use jsonnet_go::{JsonnetVm, Result};
+//! # use jsonnet_go::JsonnetVm;
 //! #
-//! # fn main() -> Result<()> {
+//! # fn main() -> anyhow::Result<()> {
 //! let jsonnet = "{ field: std.base64('Hello, World!') }";
 //! let mut vm = JsonnetVm::new();
 //!
@@ -19,8 +19,242 @@
 //! # }
 //! ```
 //!
+//! For more control you can use [`EvaluateOptions`] to set both the filename
+//! and (optionally) the snippet to be evaluated.
+//!
+//! ```
+//! # use jsonnet_go::{JsonnetVm, EvaluateOptions};
+//! # fn main() -> anyhow::Result<()> {
+//! let jsonnet = "{ field: std.base64('Hello, World!') }";
+//! let mut vm = JsonnetVm::new();
+//!
+//! let options = EvaluateOptions::new("<example 2>").snippet(jsonnet);
+//! let json = vm.evaluate(options)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! For details on how to write jsonnet programs see <https://jsonnet.org> or
+//! one of the documentation pages on that same site:
+//! - the jsonnet tutorial: <https://jsonnet.org/learning/tutorial.html>
+//! - the jsonnet standard library docs: <https://jsonnet.org/ref/stdlib.html>
+//! - the jsonnet language reference: <https://jsonnet.org/ref/language.html>
+//!
 //! [`evaluate_file`]: JsonnetVm::evaluate_file
 //! [`evaluate_snippet`]: JsonnetVm::evaluate_snippet
+//!
+//! # Passing external values to Jsonnet programs
+//! Jsonnet provides two different ways to pass external values to a jsonnet
+//! program (beyond, say, importing a json file at a known path).
+//!
+//! ## Top-Level Arguments (TLAs)
+//! Jsonnet allows the top-level expression in a file to be a function
+//! definition instead of a JSON object. If it is a function, then the arguments
+//! to that function are called top-level arguments and can be provided by the
+//! jsonnet runtime.
+//!
+//! To set the top-level arguments for a jsonnet program, use
+//! [`JsonnetVm::tla_var`], [`JsonnetVm::tla_code`], or, if the `json` feature
+//! is enabled, [`JsonnetVm::tla_json`].
+//!
+//! ```
+//! # use jsonnet_go::{JsonnetVm, EvaluateOptions};
+//! # fn main() -> anyhow::Result<()> {
+//! let jsonnet = r#"
+//! function(count, message = "Testing, 1, 2,")
+//!     std.format("%s ..., %d", [message, count])
+//! "#;
+//!
+//! let mut vm = JsonnetVm::new();
+//! vm.tla_code("count", "17");
+//!
+//! let options = EvaluateOptions::new("<example 3>")
+//!     .snippet(jsonnet)
+//!     .string_output(true);
+//! let output = vm.evaluate(options)?;
+//!
+//! assert_eq!(output, "Testing, 1, 2, ..., 17");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The main advantage of TLAs is that they allow defaults to be provided. In
+//! the example above, no value was set for the `message` TLA so it used the
+//! default. If we had not provided a `count` TLA, though, then running the
+//! program would have exited with an error.
+//!
+//! ## External Variables (ExtVars)
+//! The jsonnet standard library provides the [`std.extVar`] function. This
+//! allows a jsonnet program to access extvars set by the runtime. Unlike with
+//! TLAs, however, if [`std.extVar`] is called with a name that is not defined
+//! then that results in an immediate error with no way to recover.
+//!
+//! ExtVars can be set by calling [`JsonnetVm::ext_var`],
+//! [`JsonnetVm::ext_code`], or, if the `json` feature is enabled,
+//! [`JsonnetVm::ext_json`].
+//!
+//! ```
+//! # use jsonnet_go::{JsonnetVm, EvaluateOptions};
+//! # fn main() -> anyhow::Result<()> {
+//! let jsonnet = r#"
+//! std.format("Testing 1, 2, ..., %d", [std.extVar('count')])
+//! "#;
+//!
+//! let mut vm = JsonnetVm::new();
+//! vm.ext_code("count", "17");
+//!
+//! let options = EvaluateOptions::new("<example 4>")
+//!     .snippet(jsonnet)
+//!     .string_output(true);
+//! let output = vm.evaluate(options)?;
+//!
+//! assert_eq!(output, "Testing 1, 2, ..., 17");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ExtVars have the advantage that they don't need to be threaded down through
+//! the program into libraries and such. However, the tradeoff is that
+//! attempting to access an extvar that doesn't exist results in an immediate
+//! error.
+//!
+//! [`std.extVar`]: https://jsonnet.org/ref/stdlib.html#ext_vars
+//!
+//! # Integration with `serde_json`
+//! If the `json` feature is enabled then this crate can take care of converting
+//! rust values to and from JSON. You can use [`JsonnetVm::evaluate_json`] to
+//! run a jsonnet program and get its output as a rust type in one step. You can
+//! also use [`JsonnetVm::tla_json`] and [`JsonnetVm::ext_json`] to set
+//! top-level arguments and external variables to JSON values, which is
+//! otherwise somewhat finicky to do.
+//!
+//! ```
+//! # #[cfg(feature = "json")] fn main() -> anyhow::Result<()> {
+//! # use jsonnet_go::{JsonnetVm, EvaluateOptions};
+//! # use serde::{Serialize, Deserialize};
+//! #[derive(Serialize, Deserialize)]
+//! struct Output {
+//!     version: u64,
+//!     values: Vec<String>,
+//! }
+//!
+//! let jsonnet = r#"
+//! function(version) {
+//!     version: version + 2,
+//!     values: std.extVar("values")
+//! }
+//! "#;
+//!
+//! let mut vm = JsonnetVm::new();
+//! vm.tla_json("version", &5)?;
+//! vm.ext_json("values", &vec!["three", "whole", "strings"]);
+//!
+//! let options = EvaluateOptions::new("<example 5>").snippet(jsonnet);
+//! let output: Output = vm.evaluate_json(options)?;
+//!
+//! assert_eq!(output.version, 7);
+//! assert_eq!(output.values, vec!["three", "whole", "strings"]);
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "json"))] fn main() {}
+//! ```
+//!
+//! # Custom Import Callbacks
+//! Jsonnet allows external files to be imported via `import`, `importstr`, and
+//! `importbin`. By default, it looks in the same directory as the file which
+//! contained the `import` statement followed by looking in all the paths
+//! specified via [`JsonnetVm::jpath_add`].
+//!
+//! If this is not the behaviour you want then you can override the import
+//! callback used by the jsonnet VM via [`JsonnetVm::import_callback`]. This
+//! will be called when an import statement is evaluated and is responsible for
+//! returning both the path and content of the file, if it is sucessfully
+//! imported.
+//!
+//! ```
+//! # use jsonnet_go::{JsonnetVm, EvaluateOptions};
+//! # use std::path::{Path, PathBuf};
+//! # fn main() -> anyhow::Result<()> {
+//! let mut vm = JsonnetVm::new();
+//! vm.import_callback(|vm, base, rel| {
+//!     if rel == Path::new("data.libsonnet") {
+//!         return Ok((
+//!             PathBuf::from("data.libsonnet"),
+//!             br#" "Here's the file contents!" "#.to_vec(),
+//!         ));
+//!     }
+//!
+//!     Err(format!("could not import `{}`", base.join(rel).display()))
+//! });
+//!
+//! let jsonnet = r#"
+//! local data = import "data.libsonnet";
+//!
+//! "the data was: " + data
+//! "#;
+//!
+//! let options = EvaluateOptions::new("<example 6>")
+//!     .snippet(jsonnet)
+//!     .string_output(true);
+//! let output = vm.evaluate(options)?;
+//!
+//! assert_eq!(output, "the data was: Here's the file contents!");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Native Extensions
+//! Jsonnet allows for providing native extensions. These are rust functions
+//! which are registered with the runtime which can then be accessed via jsonnet
+//! programs via the `std.nativeExt` function.
+//!
+//! To declare a new native extension, call [`JsonnetVm::native_callback`] with
+//! the native function you want to provide.
+//!
+//! ```
+//! # fn main() -> anyhow::Result<()> {
+//! # use jsonnet_go::{JsonnetVm, JsonValue};
+//! let mut vm = JsonnetVm::new();
+//! vm.native_callback("cbrt", ["x"], |vm, args| {
+//!     if args.len() != 1 {
+//!         return Err(format!("expected 1 argument, got {} instead", args.len()));
+//!     }
+//!
+//!     let Some(x) = args[0].as_number() else {
+//!         return Err("argument was of the wrong type, expected a number".into());
+//!     };
+//!
+//!     Ok(JsonValue::number(vm, x.cbrt()))
+//! });
+//!
+//! let jsonnet = r#"
+//! local cbrt = std.native("cbrt");
+//! cbrt(8)
+//! "#;
+//!
+//! let output = vm.evaluate_snippet("<example 7>", jsonnet)?;
+//! let output: f64 = output.parse()?;
+//!
+//! assert!((output - 2.0).abs() < 1e-10, "2.0 != {output}");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Features
+//! The following features are available:
+//! - `serde` - Enables the [`serde`] module. This is likely to only be useful
+//!   if you are writing native extensions.
+//! - `json`  - Enables helper methods that require [`serde_json`]. That is,
+//!   [`JsonnetVm::evaluate_json`], [`JsonnetVm::tla_json`], and
+//!   [`JsonnetVm::ext_json`].
+//!
+//! # Caveats and Footguns
+//! This library is built on the C interface to go-jsonnet. Unfortunately, that
+//! interface comes with some caveats:
+//! - Nul bytes in strings passed in as parameters will result in a panic.
+//! - Nul bytes in strings returned from the jsonnet VM will result in the
+//!   output getting silently truncated. This is somewhat difficult to do,
+//!   although likely still possible.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![warn(missing_docs)]
@@ -342,11 +576,11 @@ impl JsonnetVm {
 
                 match (ctx.cb)(&vm, &values) {
                     Ok(value) => {
-                        unsafe { *success = 0 };
+                        unsafe { *success = 1 };
                         value
                     }
                     Err(e) => {
-                        unsafe { *success = 1 };
+                        unsafe { *success = 0 };
                         JsonValue::string(&vm, &e)
                     }
                 }
@@ -366,7 +600,7 @@ impl JsonnetVm {
                     let message = format!("native callback panicked: {message}");
                     let message = JsonValue::string(&vm, &message);
 
-                    unsafe { *success = 1 };
+                    unsafe { *success = 0 };
                     message.into_raw()
                 }
             }
@@ -450,9 +684,9 @@ impl JsonnetVm {
         let json = serde_json::to_string(value)?;
 
         let mut code = String::with_capacity(json.len() + 32);
-        code.push_str("std.parseJson(\"");
-        jsonnet_escape(&json, &mut code);
-        code.push_str("\")");
+        code.push_str("std.parseJson(");
+        jsonnet_escape(&json, &mut code)?;
+        code.push_str(")");
 
         self.ext_code(key, &code);
         Ok(())
@@ -487,7 +721,7 @@ impl JsonnetVm {
         let key = str_to_cstring(key);
         let val = str_to_cstring(val);
 
-        unsafe { sys::jsonnet_tla_var(self.as_raw(), key.as_ptr(), val.as_ptr()) }
+        unsafe { sys::jsonnet_tla_code(self.as_raw(), key.as_ptr(), val.as_ptr()) }
     }
 
     /// Bind a jsonnet top-level argument to a provided json value.
@@ -512,9 +746,9 @@ impl JsonnetVm {
         let json = serde_json::to_string(value)?;
 
         let mut code = String::with_capacity(json.len() + 32);
-        code.push_str("std.parseJson(\"");
-        jsonnet_escape(&json, &mut code);
-        code.push_str("\")");
+        code.push_str("std.parseJson(");
+        jsonnet_escape(&json, &mut code)?;
+        code.push_str(")");
 
         self.tla_code(key, &code);
         Ok(())
@@ -767,9 +1001,12 @@ pub struct EvaluateOptions<'a> {
 
 impl<'a> EvaluateOptions<'a> {
     /// Create a new set of options for the provided file path.
-    pub fn new(filename: &'a Path) -> Self {
+    pub fn new<P>(filename: &'a P) -> Self
+    where
+        P: AsRef<Path> + ?Sized,
+    {
         Self {
-            filename,
+            filename: filename.as_ref(),
             snippet: None,
             string_output: false,
         }
@@ -1029,8 +1266,10 @@ fn osstr_to_cstring(s: &OsStr) -> CString {
 }
 
 /// Escape a string suitably for inserting it into a jsonnet string literal.
-#[cfg_attr(not(feature = "json"), allow(dead_code))]
-fn jsonnet_escape(mut input: &str, output: &mut String) {
+#[cfg(feature = "json")]
+fn jsonnet_escape(mut input: &str, output: &mut String) -> serde_json::Result<()> {
+    use ::serde::ser::Error;
+
     output.push('"');
 
     while let Some((index, b)) = input
@@ -1043,7 +1282,11 @@ fn jsonnet_escape(mut input: &str, output: &mut String) {
 
         input = &rest[1..];
         match b {
-            b'\0' => output.push_str("\\u0000"),
+            b'\0' => {
+                return Err(serde_json::Error::custom(
+                    "serialized string contained a nul byte",
+                ))
+            }
             b'\\' => output.push_str("\\\\"),
             b'\"' => output.push_str("\\\""),
             _ => unreachable!(),
@@ -1052,4 +1295,5 @@ fn jsonnet_escape(mut input: &str, output: &mut String) {
 
     output.push_str(input);
     output.push('"');
+    Ok(())
 }

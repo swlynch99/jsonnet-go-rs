@@ -11,7 +11,7 @@ fn ext_string() {
     vm.ext_json("value", text).unwrap();
     let output = vm
         .evaluate(
-            EvaluateOptions::new("<test>".as_ref())
+            EvaluateOptions::new("<test>")
                 .snippet(TEST_PROGRAM)
                 .string_output(true),
         )
@@ -31,7 +31,7 @@ unescaped quote: \"
 
     vm.ext_json("value", text).unwrap();
     let output = match vm.evaluate(
-        EvaluateOptions::new("<test>".as_ref())
+        EvaluateOptions::new("<test>")
             .snippet(TEST_PROGRAM)
             .string_output(true),
     ) {
@@ -64,7 +64,7 @@ fn ext_complex() {
     let mut vm = JsonnetVm::new();
     vm.ext_json("value", &value).unwrap();
 
-    let options = EvaluateOptions::new("<test>".as_ref()).snippet(TEST_PROGRAM);
+    let options = EvaluateOptions::new("<test>").snippet(TEST_PROGRAM);
     let output: Complex = match vm.evaluate_json(options) {
         Ok(output) => output,
         Err(e) => panic!("failed to evaluate the test program:\n{e}"),
