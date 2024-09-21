@@ -242,7 +242,7 @@ impl<'vm> JsonValue<'vm> {
     /// If this value is not currently an object then its value will be replaced
     /// with an empty object before inserting the new field.
     pub fn insert(&mut self, key: &str, value: impl AsJsonVal<'vm>) {
-        let key = crate::str_to_cstring(key.as_ref());
+        let key = crate::str_to_cstring(key);
         let val = value.as_json_val();
 
         assert!(

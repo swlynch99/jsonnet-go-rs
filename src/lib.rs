@@ -609,7 +609,7 @@ impl JsonnetVm {
         let mut ctx = Box::new(NativeContext { vm: self.vm, cb });
 
         let name = str_to_cstring(name);
-        let params: Vec<_> = params.into_iter().map(|p| str_to_cstring(p)).collect();
+        let params: Vec<_> = params.into_iter().map(str_to_cstring).collect();
         let params: Vec<_> = params
             .iter()
             .map(|p| p.as_ptr())
@@ -686,7 +686,7 @@ impl JsonnetVm {
         let mut code = String::with_capacity(json.len() + 32);
         code.push_str("std.parseJson(");
         jsonnet_escape(&json, &mut code)?;
-        code.push_str(")");
+        code.push(')');
 
         self.ext_code(key, &code);
         Ok(())
@@ -748,7 +748,7 @@ impl JsonnetVm {
         let mut code = String::with_capacity(json.len() + 32);
         code.push_str("std.parseJson(");
         jsonnet_escape(&json, &mut code)?;
-        code.push_str(")");
+        code.push(')');
 
         self.tla_code(key, &code);
         Ok(())
