@@ -20,27 +20,27 @@ pub struct JsonVal<'vm: 'value, 'value> {
 }
 
 impl<'vm: 'value, 'value> JsonVal<'vm, 'value> {
+    /// Create a new `JsonVal` from its components.
     pub fn new(vm: &'vm JsonnetVm, value: &'value sys::JsonnetJsonValue) -> Self {
-        unsafe { Self::from_parts(vm, value) }
-    }
-
-    pub unsafe fn from_parts(vm: &'vm JsonnetVm, value: *const sys::JsonnetJsonValue) -> Self {
         Self {
             vm: vm.vm,
-            value: unsafe { NonNull::new_unchecked(value as *mut _) },
+            value: NonNull::from(value),
             _marker1: PhantomData,
             _marker2: PhantomData,
         }
     }
 
+    /// Get a pointer to the underlying [`sys::JsonnetJsonValue`].
     pub fn as_raw(&self) -> *const sys::JsonnetJsonValue {
         self.value.as_ptr()
     }
 
+    /// Returns whether this value is null.
     pub fn is_null(&self) -> bool {
         unsafe { sys::jsonnet_json_extract_null(self.vm.as_ptr(), self.value.as_ptr()) != 0 }
     }
 
+    /// If this value is a boolean, then returns its value.
     pub fn as_bool(&self) -> Option<bool> {
         match unsafe { sys::jsonnet_json_extract_bool(self.vm.as_ptr(), self.value.as_ptr()) } {
             0 => Some(false),
@@ -49,6 +49,7 @@ impl<'vm: 'value, 'value> JsonVal<'vm, 'value> {
         }
     }
 
+    /// If this value is a number, then returns its value.
     pub fn as_number(&self) -> Option<f64> {
         let mut value = 0.0;
         match unsafe {
@@ -59,6 +60,7 @@ impl<'vm: 'value, 'value> JsonVal<'vm, 'value> {
         }
     }
 
+    /// If this value is a string, then returns its value.
     pub fn as_string(&self) -> Option<&'value str> {
         let value =
             unsafe { sys::jsonnet_json_extract_string(self.vm.as_ptr(), self.value.as_ptr()) };
@@ -93,6 +95,17 @@ impl<'vm, 'value> fmt::Debug for JsonVal<'vm, 'value> {
 }
 
 /// An owned jsonnet JSON value.
+///
+/// This can contain any jsonnet value. However, libjsonnet only provides access
+/// to a limited subset of the available types. It is possible to extract the
+/// value if it is null, a boolean, a string, or a number. It is not possible to
+/// otherwise inspect the inner value of the `JsonValue`.
+///
+/// Creating new `JsonValue`s however, is less restricted. Any valid JSON object
+/// can be built. With the `serde` feature enabled, you can use the [`serde`][0]
+/// module to serialize a rust struct directly to a `JsonValue`.
+///
+/// [0]: crate::serde
 pub struct JsonValue<'vm> {
     vm: NonNull<sys::JsonnetVm>,
     value: NonNull<sys::JsonnetJsonValue>,
@@ -113,18 +126,22 @@ impl<'vm> JsonValue<'vm> {
         }
     }
 
+    /// Get a pointer to the underlying [`sys::JsonnetJsonValue`].
     pub fn as_raw(&self) -> *const sys::JsonnetJsonValue {
         self.value.as_ptr()
     }
 
+    /// Get a mutable pointer to the underlying [`sys::JsonnetJsonValue`].
     pub fn as_raw_mut(&mut self) -> *mut sys::JsonnetJsonValue {
         self.value.as_ptr()
     }
 
+    /// Convert this [`JsonValue`] into a raw [`sys::JsonnetJsonValue`] pointer.
     pub fn into_raw(self) -> *mut sys::JsonnetJsonValue {
         ManuallyDrop::new(self).value.as_ptr()
     }
 
+    /// Get a [`JsonVal`] reference to this value.
     pub fn as_json_val<'value>(&'value self) -> JsonVal<'vm, 'value> {
         JsonVal {
             vm: self.vm,
@@ -134,18 +151,22 @@ impl<'vm> JsonValue<'vm> {
         }
     }
 
+    /// Returns whether this value is null.
     pub fn is_null(&self) -> bool {
         self.as_json_val().is_null()
     }
 
+    /// If this value is a boolean, then returns its value.
     pub fn as_bool(&self) -> Option<bool> {
         self.as_json_val().as_bool()
     }
 
+    /// If this value is a number, then returns its value.
     pub fn as_number(&self) -> Option<f64> {
         self.as_json_val().as_number()
     }
 
+    /// If this value is a string, then returns its value.
     pub fn as_string(&self) -> Option<&str> {
         self.as_json_val().as_string()
     }
@@ -252,7 +273,9 @@ impl<'vm> fmt::Debug for JsonValue<'vm> {
     }
 }
 
+/// Trait for types which can be converted to a [`JsonVal`].
 pub trait AsJsonVal<'vm> {
+    /// Get a [`JsonVal`] reference to `self`.
     fn as_json_val<'value>(&'value self) -> JsonVal<'vm, 'value>;
 }
 

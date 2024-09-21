@@ -22,7 +22,8 @@
 //! [`evaluate_file`]: JsonnetVm::evaluate_file
 //! [`evaluate_snippet`]: JsonnetVm::evaluate_snippet
 
-#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![warn(missing_docs)]
 
 use std::collections::BTreeMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString, OsStr};
@@ -44,14 +45,21 @@ mod string;
 mod value;
 
 #[cfg(feature = "serde")]
-#[cfg_attr(docsrs, doc_cfg(feature = "serde"))]
 pub mod serde;
 
 pub use crate::string::JsonnetString;
 pub use crate::value::{AsJsonVal, JsonVal, JsonValue};
 
+/// Result type returned by jsonnet methods.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// The Jsonnet VM.
+///
+/// It allows you to run Jsonnet programs and is also responsible for managing
+/// the memory of all values involved within the program, along with imports and
+/// native extensions.
+///
+/// See the [`crate`] documentation for more details.
 pub struct JsonnetVm {
     vm: NonNull<sys::JsonnetVm>,
 
@@ -66,6 +74,7 @@ pub struct JsonnetVm {
 }
 
 impl JsonnetVm {
+    /// Create a new Jsonnet VM.
     pub fn new() -> Self {
         unsafe { Self::from_raw(sys::jsonnet_make()) }
     }
@@ -326,7 +335,7 @@ impl JsonnetVm {
                 //         we find a null pointer.
                 unsafe {
                     while !(*current).is_null() {
-                        values.push(JsonVal::from_parts(&vm, *current));
+                        values.push(JsonVal::new(&vm, &**current));
                         current = current.add(1);
                     }
                 }
@@ -434,13 +443,16 @@ impl JsonnetVm {
     /// This method panics if either of `key` or the serialized JSON form of
     /// `value` contain a nul byte.
     #[cfg(feature = "json")]
-    #[cfg_attr(docsrs, doc_cfg(feature = "json"))]
     pub fn ext_json<V>(&mut self, key: &str, value: &V) -> serde_json::Result<()>
     where
         V: Serialize + ?Sized,
     {
         fn escape(mut input: &str, output: &mut String) {
-            while let Some((index, b)) = input.bytes().enumerate().find(|(_, b)| matches!(b, b'\0' | b'\\' | b'"')) {
+            while let Some((index, b)) = input
+                .bytes()
+                .enumerate()
+                .find(|(_, b)| matches!(b, b'\0' | b'\\' | b'"'))
+            {
                 let (head, rest) = input.split_at(index);
                 output.push_str(head);
 
@@ -449,7 +461,7 @@ impl JsonnetVm {
                     b'\0' => output.push_str("\\u0000"),
                     b'\\' => output.push_str("\\\\"),
                     b'\"' => output.push_str("\\\""),
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
             }
 
@@ -551,7 +563,6 @@ impl JsonnetVm {
     ///
     /// [`string_output`]: EvaluateOptions::string_output
     #[cfg(feature = "json")]
-    #[cfg_attr(docsrs, doc_cfg(feature = "json"))]
     pub fn evaluate_json<T>(&mut self, options: EvaluateOptions<'_>) -> Result<T>
     where
         T: DeserializeOwned,
@@ -922,6 +933,7 @@ impl<'a> Drop for StreamIter<'a> {
     }
 }
 
+/// Error type returned by methods within this crate.
 #[derive(Debug)]
 pub struct Error(ErrorImpl);
 

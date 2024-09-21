@@ -1,3 +1,18 @@
+//! Serde serialization for [`JsonValue`]s.
+//!
+//! Native extensions allow you to construct any JSON object and return it,
+//! although they are much more limited in what you can extract from an object.
+//! Constructing JSON objects by hand is inconvenient. This module allows you to
+//! serialize an existing rust struct to a [`JsonValue`] using serde.
+//!
+//! Generally, the only method you will need to use is [`to_json_value`].
+//! However, this module also contains a serde serializer and corresponding data
+//! model serializers for more advanced use cases.
+//!
+//! The resulting JSON objects output from this module should match that
+//! produced by [`serde_json`]. Any case which does not should be considered a
+//! bug.
+
 use std::borrow::Cow;
 
 use jsonnet_go_sys as sys;
@@ -6,7 +21,13 @@ use serde::{Serialize, Serializer};
 
 use crate::{Error, JsonValue, JsonnetVm};
 
-#[cfg_attr(docsrs, doc_cfg(feature = "serde"))]
+/// Serialize a value to a [`JsonValue`].
+///
+/// # Errors
+/// This method will return an error if:
+/// - `T`'s serializer emits an error,
+/// - any object within attempts to serialize as a map with non-string keys, or,
+/// - a string is serialized containing a nul (`\0`) byte.
 pub fn to_json_value<'vm, T>(vm: &'vm JsonnetVm, value: &T) -> Result<JsonValue<'vm>, Error>
 where
     T: Serialize,
@@ -15,12 +36,12 @@ where
 }
 
 /// A serde serializer for [`JsonValue`]s.
-#[cfg_attr(docsrs, doc_cfg(feature = "serde"))]
 pub struct JsonValueSerializer<'vm> {
     vm: &'vm JsonnetVm,
 }
 
 impl<'vm> JsonValueSerializer<'vm> {
+    /// Create a new serializer for a [`JsonnetVm`].
     pub fn new(vm: &'vm JsonnetVm) -> Self {
         Self { vm }
     }
@@ -207,13 +228,14 @@ impl<'vm> Serializer for JsonValueSerializer<'vm> {
     }
 }
 
-#[cfg_attr(docsrs, doc_cfg(feature = "serde"))]
+/// A serializer for JSON sequences.
 pub struct JsonSeqSerializer<'vm> {
     vm: &'vm JsonnetVm,
     array: JsonValue<'vm>,
 }
 
 impl<'vm> JsonSeqSerializer<'vm> {
+    /// Construct a new serializer.
     pub fn new(vm: &'vm JsonnetVm) -> Self {
         let array = JsonValue::array(vm);
 
@@ -286,7 +308,7 @@ impl<'vm> serde::ser::SerializeTupleStruct for JsonSeqSerializer<'vm> {
     }
 }
 
-#[cfg_attr(docsrs, doc_cfg(feature = "serde"))]
+/// A serializer for JSON maps.
 pub struct JsonMapSerializer<'vm> {
     vm: &'vm JsonnetVm,
     map: JsonValue<'vm>,
@@ -294,6 +316,7 @@ pub struct JsonMapSerializer<'vm> {
 }
 
 impl<'vm> JsonMapSerializer<'vm> {
+    /// Construct a new serializer.
     pub fn new(vm: &'vm JsonnetVm) -> Self {
         let map = JsonValue::object(vm);
 

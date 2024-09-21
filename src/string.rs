@@ -54,7 +54,7 @@ impl<'a> JsonnetString<'a> {
         this.ptr.as_ptr()
     }
 
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.len + 1
     }
 }
