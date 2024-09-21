@@ -15,6 +15,11 @@ fn evaluate_base64() {
 }
 
 #[test]
+fn version_is_valid_utf8() {
+    let _ = version();
+}
+
+#[test]
 fn import_callback() -> anyhow::Result<()> {
     use std::path::{Path, PathBuf};
 

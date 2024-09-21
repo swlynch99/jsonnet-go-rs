@@ -255,6 +255,16 @@
 //! - Nul bytes in strings returned from the jsonnet VM will result in the
 //!   output getting silently truncated. This is somewhat difficult to do,
 //!   although likely still possible.
+//!
+//! # Debugging
+//! When debugging you may find that the debugger breaks in unexpected places
+//! on a `SIGURG` signal. This is due to an internal implementation detail of
+//! the go runtime where it uses `SIGURG` tp perform preemptive task switching.
+//!
+//! In order to debug normally you will need to configure your debugger to
+//! not break on `SIGURG`.
+//! - For LLDB this can be done by running ```text process handle -p true -s
+//!   false -n false ``` in the debugger command window.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![warn(missing_docs)]
@@ -275,6 +285,13 @@ use jsonnet_go_sys as sys;
 
 use crate::string::JsonnetStringBuilder;
 
+// Ensure the code examples in the readme are tested but don't show up in the
+// actual docs.
+#[cfg(all(doc, feature = "json"))]
+#[doc(hidden)]
+#[doc = include_str!("../README.md")]
+pub mod readme {}
+
 mod string;
 mod value;
 
@@ -286,6 +303,29 @@ pub use crate::value::{AsJsonVal, JsonVal, JsonValue};
 
 /// Result type returned by jsonnet methods.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// Get the version string of the underlying libjsonnet library.
+///
+/// Note that this is not guaranteed to be a semver version string.
+pub fn version() -> &'static str {
+    let version = unsafe { sys::jsonnet_version() };
+
+    // SAFETY: jsonnet_version returns a valid C string.
+    let version = unsafe { CStr::from_ptr(version) };
+
+    if cfg!(debug_assertions) {
+        match version.to_str() {
+            Ok(version) => version,
+            Err(e) => {
+                unreachable!("the string returned by jsonnet_version was not valid UTF-8: {e}")
+            }
+        }
+    } else {
+        // SAFETY: We validate as part of the test suite that jsonnet_version returns
+        //         valid UTF-8.
+        unsafe { std::str::from_utf8_unchecked(version.to_bytes()) }
+    }
+}
 
 /// The Jsonnet VM.
 ///
