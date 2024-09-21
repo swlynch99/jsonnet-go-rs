@@ -447,32 +447,11 @@ impl JsonnetVm {
     where
         V: Serialize + ?Sized,
     {
-        fn escape(mut input: &str, output: &mut String) {
-            while let Some((index, b)) = input
-                .bytes()
-                .enumerate()
-                .find(|(_, b)| matches!(b, b'\0' | b'\\' | b'"'))
-            {
-                let (head, rest) = input.split_at(index);
-                output.push_str(head);
-
-                input = &rest[1..];
-                match b {
-                    b'\0' => output.push_str("\\u0000"),
-                    b'\\' => output.push_str("\\\\"),
-                    b'\"' => output.push_str("\\\""),
-                    _ => unreachable!(),
-                }
-            }
-
-            output.push_str(input);
-        }
-
         let json = serde_json::to_string(value)?;
 
         let mut code = String::with_capacity(json.len() + 32);
         code.push_str("std.parseJson(\"");
-        escape(&json, &mut code);
+        jsonnet_escape(&json, &mut code);
         code.push_str("\")");
 
         self.ext_code(key, &code);
@@ -509,6 +488,36 @@ impl JsonnetVm {
         let val = str_to_cstring(val);
 
         unsafe { sys::jsonnet_tla_var(self.as_raw(), key.as_ptr(), val.as_ptr()) }
+    }
+
+    /// Bind a jsonnet top-level argument to a provided json value.
+    ///
+    /// See the jsonnet language reference for details on what a top-level
+    /// argument is. Specifically, see the section on [top-level arguments][0]
+    ///
+    /// [0]: https://jsonnet.org/ref/language.html#top-level-arguments-tlas
+    ///
+    /// # Errors
+    /// This method will only return an error if the serialization of `value`
+    /// returns an error.
+    ///
+    /// # Panics
+    /// This method panics if either of `key` or the serialized JSON form of
+    /// `value` contain a nul byte.
+    #[cfg(feature = "json")]
+    pub fn tla_json<V>(&mut self, key: &str, value: &V) -> serde_json::Result<()>
+    where
+        V: Serialize + ?Sized,
+    {
+        let json = serde_json::to_string(value)?;
+
+        let mut code = String::with_capacity(json.len() + 32);
+        code.push_str("std.parseJson(\"");
+        jsonnet_escape(&json, &mut code);
+        code.push_str("\")");
+
+        self.tla_code(key, &code);
+        Ok(())
     }
 
     /// Add to the default import callback's library search path.
@@ -1017,4 +1026,30 @@ fn osstr_to_cstring(s: &OsStr) -> CString {
         Ok(s) => s,
         Err(e) => panic!("OsStr contained a nul byte: {e}"),
     }
+}
+
+/// Escape a string suitably for inserting it into a jsonnet string literal.
+#[cfg_attr(not(feature = "json"), allow(dead_code))]
+fn jsonnet_escape(mut input: &str, output: &mut String) {
+    output.push('"');
+
+    while let Some((index, b)) = input
+        .bytes()
+        .enumerate()
+        .find(|(_, b)| matches!(b, b'\0' | b'\\' | b'"'))
+    {
+        let (head, rest) = input.split_at(index);
+        output.push_str(head);
+
+        input = &rest[1..];
+        match b {
+            b'\0' => output.push_str("\\u0000"),
+            b'\\' => output.push_str("\\\\"),
+            b'\"' => output.push_str("\\\""),
+            _ => unreachable!(),
+        }
+    }
+
+    output.push_str(input);
+    output.push('"');
 }
