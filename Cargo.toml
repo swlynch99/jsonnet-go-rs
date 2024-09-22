@@ -3,6 +3,12 @@ name = "jsonnet-go"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+authors = ["swlynch99"]
+repository = "https://github.com/swlynch99/jsonnet-go-rs"
+description = "Idiomatic rust bindings for go-jsonnet"
+categories = ["api-bindings"]
+keywords = ["jsonnet"]
+msrv = "1.74"
 
 [features]
 serde = ["dep:serde"]

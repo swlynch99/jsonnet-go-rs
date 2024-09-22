@@ -40,7 +40,7 @@ impl<'a> JsonnetString<'a> {
     }
 
     pub(crate) unsafe fn from_raw(vm: &'a JsonnetVm, ptr: *mut c_char) -> Self {
-        let len = unsafe { CStr::from_ptr(ptr).count_bytes() };
+        let len = unsafe { CStr::from_ptr(ptr).to_bytes().len() };
 
         Self {
             vm,

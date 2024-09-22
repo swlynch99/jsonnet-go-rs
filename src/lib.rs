@@ -1111,8 +1111,9 @@ impl<'a> MultiIter<'a> {
             return None;
         }
 
-        let val = unsafe { CStr::from_ptr(self.off.add(key.count_bytes() + 1)) };
-        self.off = unsafe { val.as_ptr().add(val.count_bytes() + 1) };
+        let klen = key.to_bytes_with_nul().len();
+        let val = unsafe { CStr::from_ptr(self.off.add(klen)) };
+        self.off = unsafe { val.as_ptr().add(klen) };
 
         Some((key, val))
     }
@@ -1188,7 +1189,7 @@ impl<'a> StreamIter<'a> {
             return None;
         }
 
-        self.off = unsafe { self.off.add(key.count_bytes() + 1) };
+        self.off = unsafe { self.off.add(key.to_bytes_with_nul().len()) };
         Some(key)
     }
 
